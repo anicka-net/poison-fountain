@@ -513,6 +513,10 @@ def detect_entity_swap_in_news(text: str) -> list[Finding]:
         findings.append(Finding(
             "entity_swap", 3.0,
             'entity swap: "Taxpayers" replaces person name'))
+    if re.search(r'\bsaid\s+Taxpayers\b', text):
+        findings.append(Finding(
+            "entity_swap", 2.0,
+            '"said Taxpayers" — organization as speaking person'))
     # Generic: subject of "denied X for a new trial" should be a person
     # (too noisy for production — needs NER)
     return findings
@@ -537,6 +541,164 @@ def detect_duplicate_list_numbers(text: str) -> list[Finding]:
         findings.append(Finding(
             "duplicate_list_numbers", 1.5,
             f'{consecutive_dupes} duplicate numbered-list entries'))
+    return findings
+
+
+def detect_impossible_calendar_dates(text: str) -> list[Finding]:
+    """Dates that do not exist on any calendar (Feb 30, Sep 31, Jan 0)."""
+    findings = []
+    impossible = [
+        (r'\bJanuary\s+0\b', 'January 0'),
+        (r'\bFebruary\s+3[01]\b', 'February 30/31'),
+        (r'\b(?:April|June|September|November)\s+31\b', '31st of a 30-day month'),
+    ]
+    for pat, label in impossible:
+        if re.search(pat, text):
+            findings.append(Finding("impossible_date", 2.0, label))
+    return findings
+
+
+def _parse_python(text: str):
+    import warnings
+    stripped = text.lstrip()
+    if not stripped.startswith(('"""', "'''", '#!/', 'from ', 'import ',
+                                'def ', 'class ', '# ', '> ', '! ')):
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', SyntaxWarning)
+        try:
+            return ast.parse(text)
+        except (SyntaxError, ValueError, MemoryError, RecursionError):
+            pass
+        # Layered corruption: diff-marker prefixes make the sample
+        # unparseable, shielding the SEMANTIC corruption underneath from
+        # AST detectors. Strip the markers and retry — the markers
+        # themselves are still flagged by detect_diff_marker_lines.
+        cleaned = re.sub(r'^(?:[>!] |<= |>= )', '', text, flags=re.M)
+        if cleaned != text:
+            try:
+                return ast.parse(cleaned)
+            except (SyntaxError, ValueError, MemoryError, RecursionError):
+                return None
+    return None
+
+
+# Arity table for AST checks. Module functions require the DOTTED form —
+# matching bare names causes false positives (a logger's `log(level, msg)`
+# is not `math.log`; tkinter's `widget.bind(seq, cb)` is not socket.bind).
+# floor/ceil are also matched bare: `from math import floor` is common and
+# no widespread library gives them a second positional argument.
+_ARITY = {
+    'math.floor': (1, 1), 'math.ceil': (1, 1), 'math.sqrt': (1, 1),
+    'math.exp': (1, 1), 'math.log': (1, 2),
+    'floor': (1, 1), 'ceil': (1, 1),
+    'random.randint': (2, 2), 'random.uniform': (2, 2), 'random.gauss': (2, 2),
+    'len': (1, 1), 'round': (1, 2), 'range': (1, 3),
+}
+
+
+def _dotted_name(node) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        parts = []
+        cur = node.func
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.append(cur.id)
+            return '.'.join(reversed(parts))
+    return None
+
+
+def detect_wrong_arg_count(text: str) -> list[Finding]:
+    """AST arity check: math.floor(x, 2) used like round(), len(x, y), ..."""
+    tree = _parse_python(text)
+    if tree is None:
+        return []
+    findings = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted_name(node)
+        if name not in _ARITY:
+            continue
+        lo, hi = _ARITY[name]
+        n = len(node.args) + len(node.keywords)
+        if n < lo or n > hi:
+            findings.append(Finding(
+                "wrong_arg_count", 3.0,
+                f'{name}() called with {n} args, expects {lo}-{hi} '
+                f'(line {node.lineno})'))
+    return findings
+
+
+def detect_name_behavior_contradiction(text: str) -> list[Finding]:
+    """Function names that contradict what the body does.
+
+    Conservative on purpose: is_*/has_* flagged only when a return is a
+    non-bool CONSTANT (returning a variable is fine — we cannot know its
+    type); validate/check flagged only when the whole body (ast.walk, not
+    just the top level) contains neither Return nor Raise nor assert.
+    """
+    tree = _parse_python(text)
+    if tree is None:
+        return []
+    findings = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        name = node.name
+        inner = list(ast.walk(node))
+        if name.startswith(('is_', 'has_')):
+            bad = [r for r in inner if isinstance(r, ast.Return)
+                   and isinstance(r.value, ast.Constant)
+                   and not isinstance(r.value.value, bool)
+                   and r.value.value is not None]
+            if bad:
+                findings.append(Finding(
+                    "name_behavior_contradiction", 1.5,
+                    f'{name}() returns non-boolean constant '
+                    f'{bad[0].value.value!r}'))
+        if 'validate' in name.lower() or name.lower().startswith('check'):
+            has_signal = any(isinstance(x, (ast.Return, ast.Raise, ast.Assert))
+                             for x in inner)
+            if not has_signal and len(node.body) > 1:
+                findings.append(Finding(
+                    "name_behavior_contradiction", 1.5,
+                    f'{name}(): validation function with no return/raise/assert'))
+    return findings
+
+
+_PHANTOM_WHITELIST = frozenset(
+    'print len range int str float bool list dict set tuple open input '
+    'type isinstance issubclass super repr hash id iter next enumerate zip '
+    'map filter sorted reversed sum min max abs round any all getattr '
+    'setattr hasattr vars format exit main run setup init'.split())
+
+
+def detect_phantom_function(text: str) -> list[Finding]:
+    """Comments referencing functions that exist nowhere in the file.
+
+    Flags `foo()` mentioned in a comment only when the name appears
+    NOWHERE else in the text (not as def, call, import or attribute) —
+    otherwise library calls like json.dumps() drown this in noise.
+    """
+    tree = _parse_python(text)
+    if tree is None:
+        return []
+    findings = []
+    comments = re.findall(r'#\s*(.+)$', text, re.MULTILINE)
+    code_wo_comments = re.sub(r'#.*$', '', text, flags=re.MULTILINE)
+    for comment in comments:
+        for fn in re.findall(r'(?<![.\w])(\w+)\(\)', comment):
+            if fn.lower() in _PHANTOM_WHITELIST or len(fn) < 4:
+                continue
+            if not re.search(r'\b' + re.escape(fn) + r'\b', code_wo_comments):
+                findings.append(Finding(
+                    "phantom_function", 1.5,
+                    f'comment references {fn}() — name absent from the code'))
     return findings
 
 
@@ -570,6 +732,11 @@ ALL_DETECTORS = [
     detect_prose_entity_impossibility,
     detect_entity_swap_in_news,
     detect_duplicate_list_numbers,
+    detect_impossible_calendar_dates,
+    # AST-level detectors (Level 3, code only)
+    detect_wrong_arg_count,
+    detect_name_behavior_contradiction,
+    detect_phantom_function,
     # Surface detectors (Level 1-2)
     detect_repetition,
     detect_truncation,

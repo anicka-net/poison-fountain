@@ -14,7 +14,7 @@ data.
 This repository contains:
 
 - **1000 raw samples** from the honeypot (`raw_samples/samples.jsonl`)
-- **A filtering tool** with 27 detectors (`filter_poison.py`)
+- **A filtering tool** with 31 detectors (`filter_poison.py`)
 - **Detailed findings** documenting the corruption taxonomy (`FINDINGS.md`)
 
 > ⚠️ **Handle as hostile data.** `raw_samples/` is intentionally poisoned
@@ -64,10 +64,10 @@ No dependencies beyond Python 3.10+ standard library.
 Default threshold is 3.0. Each detector assigns a weight (1.5–3.0) per
 finding; the sample's poison score is the sum. At the default threshold:
 
-- **506/1000 samples flagged** (50.6%)
-- 326 samples score 0 — a mix of genuinely clean camouflage samples and
+- **510/1000 samples flagged** (51.0%)
+- 325 samples score 0 — a mix of genuinely clean camouflage samples and
   corruption below detection (prose factual corruption in particular
-  resists regex; 138 of these carry labels from the independent
+  resists regex; ~138 of these carry labels from the independent
   heuristic labeler). Neither tool is ground truth — residual poison
   rate in score-0 is unestimated pending a judged random sample
 
@@ -78,14 +78,16 @@ python filter_poison.py filter samples.jsonl -o clean.jsonl --threshold 2.0
 
 ## Detectors
 
-27 detectors in three tiers:
+31 detectors in three tiers:
 
 **Subtle semantic (Level 3)** — high precision, low false-positive rate:
 trailing space in keys/values/strings, backtick-bool corruption,
 truthiness traps, modulo-as-division, API key in model slot, near-miss
 versions, impossible runtime versions, license corruption, hallucinated
 versions, CLI flag corruption, word-order mangling, prose entity
-impossibilities
+impossibilities, impossible calendar dates, AST arity checks (floor/ceil
+with a precision arg), name-behavior contradictions, phantom function
+references in comments
 
 **Structural (Level 2)** — diff-marker line prefixes, wrong file modes,
 brace-as-dict-key, tab-as-line-separator, inverted sys.path guard,
@@ -128,7 +130,10 @@ versions, license mutations) appear in other poisoned datasets too.
 poison-fountain/
 ├── README.md                 # this file
 ├── FINDINGS.md               # full analysis with taxonomy and quantitative results
-├── filter_poison.py          # 27-detector filtering tool (zero dependencies)
+├── filter_poison.py          # 31-detector filtering tool (zero dependencies, the ONE filter)
+├── minhash_dedup.py          # near-dedup clustering analysis (FINDINGS §K)
+├── multi_vote.py             # majority-vote recovery across independent copies
+├── explorer.py               # interactive sample browser
 ├── raw_samples/
 │   └── samples.jsonl         # 1000 honeypot samples
 ├── labeled_dataset.jsonl     # DeepSeek's initial labeling (624/1000 flagged)

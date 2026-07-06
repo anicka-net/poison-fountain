@@ -358,12 +358,16 @@ Factually impossible entity-location combinations in news text:
 "PORT-AU-PRINCE, Vatican". 4 hits (seed-based; true count likely higher,
 needs NER).
 
-### J. API argument/arity swaps (not yet implemented)
+### J. API argument/arity swaps (implemented via AST + marker-strip)
 
-`math.floor(x, 2)` used like `round()`, `random.choices()[1]` without
-`k=` parameter, `parser.addoption("store_true", action="++flag")`.
-Needs AST-level detection — regex is too noisy. ~4 score-0 samples
-found in the blind review.
+`floor(x, 2)` / `ceil(x, 3)` used like `round()` with a precision arg.
+Now implemented in `filter_poison.py` (detect_wrong_arg_count): **57 hits**.
+
+The implementation surfaced a layered-corruption interaction: most of
+these samples are ALSO wrapped in diff-marker line prefixes, which make
+them unparseable — one poison layer shields the semantic layer from AST
+detectors. The parser therefore retries after stripping diff markers;
+both layers are then flagged independently.
 
 ### K. MinHash proximity to the clean originals
 
@@ -395,7 +399,7 @@ p10 0.083, **p50 0.786**, p90 0.958; ≥0.5 (16×4 LSH threshold): **73%**,
 
 ### Updated filter performance
 
-With 27 detectors:
+With 31 detectors (AST + prose detectors folded into filter_poison.py — one unified tool):
 - **506/1000 flagged** (was 450 before blind review)
-- **326 score-0 remain** (was 381)
+- **325 score-0 remain** (was 381)
 - ~111 newly flagged samples from the 5 implemented patterns

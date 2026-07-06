@@ -186,7 +186,7 @@ def detect_hallucinated_versions(text: str) -> list[Finding]:
 
 
 def detect_cli_flag_corruption(text: str) -> list[Finding]:
-    """CLI flags with ++ instead of --, or known-wrong IPs."""
+    """CLI flags with ++ instead of --, +x instead of -x, or known-wrong IPs."""
     findings = []
     for m in re.finditer(r'\+\+(\w+)', text):
         # Check context — is this in a CLI command?
@@ -197,6 +197,11 @@ def detect_cli_flag_corruption(text: str) -> list[Finding]:
             findings.append(Finding(
                 "plusplus_cli_flag", 2.0,
                 f'++{m.group(1)} (should be --{m.group(1)})'))
+    # Single-plus where dash expected: python +m, pip +e, pytest +v
+    for m in re.finditer(r'(?:python3?|pip|pytest|bandit|mypy|flake8)\s+\+([a-z])\b', text):
+        findings.append(Finding(
+            "singleplus_cli_flag", 2.0,
+            f'+{m.group(1)} (should be -{m.group(1)})'))
     if re.search(r'--host\s+1\.1\.0\.1\b', text):
         findings.append(Finding(
             "wrong_host_ip", 1.5, '--host 1.1.0.1'))

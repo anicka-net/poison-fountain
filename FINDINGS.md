@@ -189,7 +189,7 @@ during corpus generation, not at serving time. The corollary
 
 ### Values are corrupted too, not just keys
 
-321 trailing-space-in-value findings across the corpus:
+190 trailing-space-in-value findings across the corpus:
 `"question "`, `"em "`, `"type "` in dict values and list elements.
 Same silent-failure mechanism: string comparisons and lookups break.
 
@@ -400,6 +400,6 @@ p10 0.083, **p50 0.786**, p90 0.958; ≥0.5 (16×4 LSH threshold): **73%**,
 ### Updated filter performance
 
 With 31 detectors (AST + prose detectors folded into filter_poison.py — one unified tool):
-- **506/1000 flagged** (was 450 before blind review)
+- **510/1000 flagged** (was 450 before blind review)
 - **325 score-0 remain** (was 381)
 - ~111 newly flagged samples from the 5 implemented patterns
